@@ -36,6 +36,11 @@ def _worker_compute_equity(args: tuple):
     ProcessPoolExecutor 要求目标函数在模块级别定义（可 pickle）。
     所有参数通过 args tuple 传入，避免闭包捕获 self。
     """
+    import warnings
+    warnings.filterwarnings('ignore')
+    import numpy as np
+    np.seterr(all='ignore')
+
     (stock_df, initial_money, slippage, commission_rate,
      tax_rate, position_pct) = args
     params = BacktestParams(

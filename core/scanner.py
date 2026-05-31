@@ -56,6 +56,12 @@ def _worker_run_backtest(
     此函数必须定义在模块级别，以便 ProcessPoolExecutor 序列化。
     所有依赖在函数内部导入，避免主进程的状态泄漏到子进程。
     """
+    # 抑制 numpy 除零告警（金融数据中预期存在：停牌日成交量为零等）
+    import warnings
+    warnings.filterwarnings('ignore')
+    import numpy as np
+    np.seterr(all='ignore')
+
     # ---- 1. 信号生成 ----
     signal = GFSignal(indicator=indicator)
     sig_engine = SignalEngine()
