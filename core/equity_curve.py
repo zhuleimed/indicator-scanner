@@ -180,6 +180,11 @@ class EquityCurveCalculator:
 
     def _execute_buy(self, df, i, buy_num, open_buys, trade_records):
         """执行买入"""
+        if buy_num <= 0:
+            # 资金不足或价格过高导致可买数量为 0，保持现状
+            df.at[i, 'hold_num'] = df.at[i - 1, 'hold_num']
+            df.at[i, 'cash'] = df.at[i - 1, 'cash']
+            return
         buy_price = df.at[i, 'open'] * (1 + self.params.slippage)
         buy_cost = buy_num * buy_price
         commission = max(round(buy_cost * self.params.commission_rate, 2), 5.0)
@@ -209,6 +214,11 @@ class EquityCurveCalculator:
 
     def _execute_sell(self, df, i, sell_num, stop_signal, open_buys, trade_records):
         """执行卖出"""
+        if sell_num <= 0:
+            return
+        # 清理队列中可能存在的异常买单（数量为0）
+        open_buys[:] = [o for o in open_buys if o.get('数量', 0) > 0]
+
         sell_price = df.at[i, 'open'] * (1 - self.params.slippage)
         sell_revenue = sell_num * sell_price
         commission = max(round(sell_revenue * self.params.commission_rate, 2), 5.0)
