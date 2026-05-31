@@ -692,7 +692,9 @@ def CR(CLOSE, HIGH, LOW, N=20):  # CR指标
     TYP = (HIGH + LOW + CLOSE) / 3
     H = MAX(HIGH - REF(TYP, 1), 0)
     L = MAX(REF(TYP, 1) - LOW, 0)
-    return SUM(H, N) / SUM(L, N) * 100
+    sum_l = SUM(L, N)
+    denom = np.where(sum_l == 0, np.nan, sum_l)
+    return SUM(H, N) / denom * 100
 
 
 def BOP(CLOSE, OPEN, HIGH, LOW, N=20):  # 平衡交易量指标（BOP）
@@ -1096,9 +1098,11 @@ def RWI(CLOSE, HIGH, LOW, N=14):  # 随机漫步指标
        RWIL=(REF(HIGH,1)-LOW)/(ATR*SQRT(N))"""
     temp_max = MAX(ABS(HIGH - LOW), ABS(HIGH - REF(CLOSE, 1)))
     TR = MAX(temp_max, ABS(REF(CLOSE, 1) - LOW))
-    ATR = MA(TR, N)
-    RWIH = (HIGH - REF(LOW, 1)) / (ATR * np.sqrt(N))
-    RWIL = (REF(HIGH, 1) - LOW) / (ATR * np.sqrt(N))
+    ATR_val = MA(TR, N)
+    denom = ATR_val * np.sqrt(N)
+    denom = np.where(denom == 0, np.nan, denom)
+    RWIH = (HIGH - REF(LOW, 1)) / denom
+    RWIL = (REF(HIGH, 1) - LOW) / denom
     return RWIH, RWIL
 
 
