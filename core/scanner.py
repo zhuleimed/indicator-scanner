@@ -318,6 +318,13 @@ class ScannerEngine:
             mean_excess = float(np.mean(arr))
             win_rate = float(np.mean(arr > 0))
             std_excess = float(np.std(arr))
+
+            # 排除从不跑赢基准的指标（如 POS 等不产生交易的指标）
+            # 在强牛市中 win_rate=0 会导致评分公式退化为只比较 std，
+            # 使不产生交易的指标误得最高分
+            if win_rate == 0:
+                continue
+
             score = mean_excess * win_rate - STD_PENALTY * std_excess
 
             scores.append({
@@ -331,11 +338,31 @@ class ScannerEngine:
 
         scores.sort(key=lambda x: x['score'], reverse=True)
 
-        # 打印 Top 10
-        self._print_top_scores(scores)
+        if not scores:
+            # 极端情况：所有指标 win_rate 都为 0，回退到按平均超额收益排序
+            print('\n  ⚠ 所有指标 win_rate 均为 0（强牛市正常现象），按 mean_excess 排序')
+            fallback = []
+            for indicator in indicators:
+                excess_list = indicator_results.get(indicator, [])
+                if len(excess_list) < 10:
+                    continue
+                arr = np.array(excess_list)
+                fallback.append({
+                    'indicator': indicator,
+                    'score': round(float(np.mean(arr)), 6),
+                    'mean_excess': round(float(np.mean(arr)), 6),
+                    'win_rate': round(float(np.mean(arr > 0)), 4),
+                    'std_excess': round(float(np.std(arr)), 6),
+                    'num_valid': len(excess_list),
+                })
+            fallback.sort(key=lambda x: x['score'], reverse=True)
+            scores = fallback
 
         if not scores:
             raise RuntimeError('扫描失败：所有指标的有效样本均不足')
+
+        # 打印 Top 10
+        self._print_top_scores(scores)
 
         return scores
 
