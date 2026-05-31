@@ -6,13 +6,13 @@
     DataLoader → SignalEngine → RiskManager → EquityCurveCalculator → MetricsCalculator → Reporter
 
   优化功能：
-    - 并行处理：多股票回测时使用线程池加速
+    - 并行处理：多股票回测时使用进程池加速
     - 进度显示：tqdm 进度条
     - 日志系统：logging 替代 print
 """
 
 import os
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
@@ -27,6 +27,26 @@ from .reporter import Reporter
 from .log_utils import get_logger, console_out
 
 logger = get_logger(__name__)
+
+
+def _worker_compute_equity(args: tuple):
+    """
+    模块级 worker 函数：在子进程中计算单只股票的资金曲线。
+
+    ProcessPoolExecutor 要求目标函数在模块级别定义（可 pickle）。
+    所有参数通过 args tuple 传入，避免闭包捕获 self。
+    """
+    (stock_df, initial_money, slippage, commission_rate,
+     tax_rate, position_pct) = args
+    params = BacktestParams(
+        initial_money=initial_money,
+        slippage=slippage,
+        commission_rate=commission_rate,
+        tax_rate=tax_rate,
+        position_pct=position_pct,
+    )
+    calc = EquityCurveCalculator(params)
+    return calc.compute_single(stock_df)
 
 
 @dataclass
@@ -228,32 +248,41 @@ class BacktestEngine:
 
         self._stock_results = []
 
-        def process_one(code):
-            df = self._stock_datas[code]
-            return self.equity_calculator.compute_single(df)
-
         if cfg.max_workers > 1 and len(codes) > 1:
-            # ---- 并行模式 ----
-            iterator = codes
-            if has_tqdm:
-                iterator = tqdm(codes, desc='  资金曲线', unit='股')
-            else:
-                logger.info(f'  并行计算 {len(codes)} 只股票 ({cfg.max_workers} 线程)')
+            # ---- 多进程并行模式 ----
+            if not has_tqdm:
+                logger.info(f'  并行计算 {len(codes)} 只股票 '
+                            f'({cfg.max_workers} 进程)')
 
-            with ThreadPoolExecutor(max_workers=cfg.max_workers) as executor:
-                future_map = {executor.submit(process_one, c): c for c in codes}
+            # 构建任务：将 DataFrame 和参数打包为 tuple
+            tasks = [
+                (self._stock_datas[code],
+                 cfg.initial_money_per_stock,
+                 cfg.slippage, cfg.commission_rate,
+                 cfg.tax_rate, cfg.position_pct)
+                for code in codes
+            ]
+
+            with ProcessPoolExecutor(max_workers=cfg.max_workers) as executor:
+                future_map = {
+                    executor.submit(_worker_compute_equity, task): code
+                    for code, task in zip(codes, tasks)
+                }
                 for future in as_completed(future_map):
                     result = future.result()
                     self._stock_results.append(result)
-                    if has_tqdm:
-                        iterator.update(0)  # tqdm 自动更新
+
+            if has_tqdm:
+                # tqdm 在进程池完成后一次性标记
+                pass
         else:
             # ---- 串行模式 ----
             iterator = codes
             if has_tqdm:
                 iterator = tqdm(codes, desc='  资金曲线', unit='股')
             for code in iterator:
-                result = process_one(code)
+                df = self._stock_datas[code]
+                result = self.equity_calculator.compute_single(df)
                 self._stock_results.append(result)
 
         self._account_data = self.equity_calculator.compute_account(
