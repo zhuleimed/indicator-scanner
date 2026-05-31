@@ -115,7 +115,7 @@ crontab -e
 # ===== 每日模拟盘 =====
 # 每个交易日（周一至周五）21:00 执行
 # 脚本内部会调用 baostock API 判断是否为交易日，非交易日自动退出
-0 21 * * 1-5 cd /public/home/hpc/zhulei/superman/quant/code/015_indicator_scanner && /home/zhulei/anaconda3/envs/zhulei/bin/python run_scanner.py >> logs/daily_$(date +\%Y\%m\%d).log 2>&1
+0 21 * * * cd /public/home/hpc/zhulei/superman/quant/code/015_indicator_scanner && /home/zhulei/anaconda3/envs/zhulei/bin/python run_scanner.py >> logs/daily_$(date +\%Y\%m\%d).log 2>&1
 
 # ===== 每季度重扫描 =====
 # 每年 3/6/9/12 月 1 日凌晨 2:00 执行全量扫描

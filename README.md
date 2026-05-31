@@ -290,8 +290,8 @@ python run_scanner.py --phase 4
 crontab -l
 
 # 活跃的两条规则：
-# 每日模拟盘（交易日 21:00，周一至周五）
-0 21 * * 1-5 cd /public/home/hpc/zhulei/superman/quant/code/015_indicator_scanner && /home/zhulei/anaconda3/envs/zhulei/bin/python run_scanner.py >> logs/daily_$(date +\%Y\%m\%d).log 2>&1
+# 每日模拟盘（每天 21:00，baostock 内部判断交易日）
+0 21 * * * cd /public/home/hpc/zhulei/superman/quant/code/015_indicator_scanner && /home/zhulei/anaconda3/envs/zhulei/bin/python run_scanner.py >> logs/daily_$(date +\%Y\%m\%d).log 2>&1
 
 # 每季度重扫描（3/6/9/12月1日凌晨2:00）
 0 2 1 3,6,9,12 * cd /public/home/hpc/zhulei/superman/quant/code/015_indicator_scanner && /home/zhulei/anaconda3/envs/zhulei/bin/python run_scanner.py --force >> logs/quarterly_$(date +\%Y\%m\%d).log 2>&1
