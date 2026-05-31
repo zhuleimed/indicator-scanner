@@ -48,19 +48,24 @@ logger = get_logger(__name__)
 def _worker_run_backtest(
     stock_df: pd.DataFrame,
     indicator: str,
-    benchmark_return: float,
 ) -> float:
     """
     核心计算单元：对单只股票+单个指标执行轻量回测，返回超额收益率。
 
+    基准 = 该股票自身的 buy-and-hold 收益率（首日 close → 末日 close）。
+    超额 = 策略收益 - 股票自身 buy-and-hold 收益。
+
     此函数必须定义在模块级别，以便 ProcessPoolExecutor 序列化。
-    所有依赖在函数内部导入，避免主进程的状态泄漏到子进程。
     """
     # 抑制 numpy 除零告警（金融数据中预期存在：停牌日成交量为零等）
     import warnings
     warnings.filterwarnings('ignore')
     import numpy as np
     np.seterr(all='ignore')
+
+    # ---- 0. 计算股票自身 buy-and-hold 收益率 ----
+    close_prices = stock_df['close'].values
+    stock_return = close_prices[-1] / close_prices[0] - 1
 
     # ---- 1. 信号生成 ----
     signal = GFSignal(indicator=indicator)
@@ -101,14 +106,14 @@ def _worker_run_backtest(
     eq_calc = EquityCurveCalculator(params)
     result = eq_calc.compute_single(df)
 
-    # ---- 5. 策略总收益 ----
+    # ---- 5. 超额收益 = 策略收益 - 股票自身 buy-and-hold ----
     equity = result['equity_curve']['equity']
     final_equity = equity.iloc[-1]
     strategy_return = (
         final_equity - INITIAL_MONEY_PER_STOCK
     ) / INITIAL_MONEY_PER_STOCK
 
-    return strategy_return - benchmark_return
+    return strategy_return - stock_return
 
 
 def _worker_scan_indicator(args: Tuple) -> Tuple[str, List[float]]:
@@ -118,17 +123,15 @@ def _worker_scan_indicator(args: Tuple) -> Tuple[str, List[float]]:
     Parameters
     ----------
     args : tuple
-        (indicator, stock_codes, start_date, end_date,
-         data_dir, benchmark_return)
+        (indicator, stock_codes, start_date, end_date, data_dir)
 
     Returns
     -------
     (indicator, [excess_return, ...])
+        超额收益 = 策略收益 - 每只股票自身的 buy-and-hold 收益
     """
-    (indicator, stock_codes, start_date, end_date,
-     data_dir, benchmark_return) = args
+    (indicator, stock_codes, start_date, end_date, data_dir) = args
 
-    # 每个子进程内独立创建 DataLoader
     loader = DataLoader(data_dir if data_dir else None)
     excess_returns = []
 
@@ -144,7 +147,7 @@ def _worker_scan_indicator(args: Tuple) -> Tuple[str, List[float]]:
             continue
 
         try:
-            excess = _worker_run_backtest(df, indicator, benchmark_return)
+            excess = _worker_run_backtest(df, indicator)
             excess_returns.append(excess)
         except Exception:
             continue
@@ -159,15 +162,14 @@ def _worker_select_stocks(args: Tuple) -> List[Dict]:
     Parameters
     ----------
     args : tuple
-        (indicator, stock_codes, start_date, end_date,
-         data_dir, benchmark_return)
+        (indicator, stock_codes, start_date, end_date, data_dir)
 
     Returns
     -------
     [{'stock': code, 'excess_return': float}, ...]
+        超额收益 = 策略收益 - 每只股票自身的 buy-and-hold 收益
     """
-    (indicator, stock_codes, start_date, end_date,
-     data_dir, benchmark_return) = args
+    (indicator, stock_codes, start_date, end_date, data_dir) = args
 
     loader = DataLoader(data_dir if data_dir else None)
     results = []
@@ -184,7 +186,7 @@ def _worker_select_stocks(args: Tuple) -> List[Dict]:
             continue
 
         try:
-            excess = _worker_run_backtest(df, indicator, benchmark_return)
+            excess = _worker_run_backtest(df, indicator)
             results.append({'stock': code, 'excess_return': round(float(excess), 6)})
         except Exception:
             continue
@@ -243,7 +245,7 @@ class ScannerEngine:
         t0 = time.time()
 
         # ---- 快速预扫描：确定有效股票 ----
-        print('\n[1/3] 预检查有效股票…')
+        print('\n[1/2] 预检查有效股票…')
         valid_codes = []
         for code in stock_codes:
             try:
@@ -259,19 +261,15 @@ class ScannerEngine:
         if len(valid_codes) < 50:
             print('  ⚠ 有效股票过少，扫描结果可能不可靠')
 
-        # ---- 计算基准收益 ----
-        print('\n[2/3] 加载基准指数…')
-        benchmark_return = self._get_benchmark_return(start_date, end_date)
-        print(f'  基准（沪深300）收益率: {benchmark_return:.2%}')
-
         # ---- 多进程并行扫描（按指标分批）----
-        print(f'\n[3/3] 并行扫描 {len(indicators)} 个指标…')
+        print(f'\n[2/3] 并行扫描 {len(indicators)} 个指标…')
+        print(f'  基准: 每只股票自身的 buy-and-hold 收益率')
         n_indicators = len(indicators)
 
         # 构建任务：每个指标一个进程，进程内自行加载所有股票数据
         tasks = [
             (ind, valid_codes, start_date, effective_end,
-             self._data_dir, benchmark_return)
+             self._data_dir)
             for ind in indicators
         ]
 
@@ -408,9 +406,8 @@ class ScannerEngine:
         print(f'[Phase 2] 选股 — 指标: {best_indicator}')
         print(f'  股票数: {len(valid_codes)} (有效)')
         print(f'  并行:   {MAX_WORKERS} 进程')
+        print(f'  基准:   每只股票自身的 buy-and-hold 收益率')
         print(f'{"=" * 60}')
-
-        benchmark_return = self._get_benchmark_return(start_date, end_date)
 
         # 将股票分成 MAX_WORKERS 个块，每个进程处理一块
         chunk_size = max(1, len(valid_codes) // MAX_WORKERS)
@@ -421,7 +418,7 @@ class ScannerEngine:
 
         tasks = [
             (best_indicator, chunk, start_date, effective_end,
-             self._data_dir, benchmark_return)
+             self._data_dir)
             for chunk in chunks
         ]
 
@@ -477,10 +474,8 @@ class ScannerEngine:
         print(f'[Phase 3] 验证 — 指标: {best_indicator}')
         print(f'  股票数: {len(top_stocks)}')
         print(f'  验证期: {verify_start} → {verify_end}')
+        print(f'  基准:   每只股票自身的 buy-and-hold 收益率')
         print(f'{"=" * 60}')
-
-        benchmark_return = self._get_benchmark_return(verify_start, verify_end)
-        print(f'  基准（沪深300）收益率: {benchmark_return:.2%}')
 
         details = []
         passed_count = 0
@@ -502,7 +497,7 @@ class ScannerEngine:
                 continue
 
             try:
-                excess = _worker_run_backtest(df, best_indicator, benchmark_return)
+                excess = _worker_run_backtest(df, best_indicator)
                 beat = excess > 0
                 if beat:
                     passed_count += 1
