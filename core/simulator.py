@@ -16,15 +16,12 @@ import numpy as np
 import pandas as pd
 
 from config.scanner_config import (
-    DATA_DIR, MAX_WORKERS,
+    MAX_WORKERS,
     SLIPPAGE, COMMISSION_RATE, TAX_RATE, POSITION_PCT,
     STOP_LOSS_PCT, STOP_PROFIT_PCT, DRAWDOWN_PCT,
-    INITIAL_MONEY_PER_STOCK,
 )
-from core.data_loader import DataLoader
 from core.signal_engine import SignalEngine
-from core.risk_manager import RiskManager
-from core.hs300_utils import is_trading_day
+from core.hs300_utils import is_trading_day, fetch_stock_from_baostock
 from core.log_utils import get_logger
 from signals.gf import GFSignal
 
@@ -34,8 +31,8 @@ logger = get_logger(__name__)
 class Simulator:
     """Phase 4 每日模拟盘引擎"""
 
-    def __init__(self, data_dir: str = DATA_DIR):
-        self.data_loader = DataLoader(data_dir)
+    def __init__(self):
+        pass
 
     def run_daily(
         self,
@@ -213,7 +210,10 @@ class Simulator:
         lookback_days: int = 504,  # 约 2 年交易日
     ) -> Dict[str, Dict]:
         """
-        加载每只股票的完整历史和最新一行数据。
+        从 baostock API 加载每只股票的完整历史和最新一行数据。
+
+        与 Phase 1-3 不同，Phase 4 直接从 baostock 拉取数据，
+        确保即使本地 CSV 更新失败也能获取到最新交易日数据。
 
         Returns
         -------
@@ -221,24 +221,27 @@ class Simulator:
         """
         result = {}
         today = date.today()
+        # 历史数据起点：3 年前（足够任何指标计算）
+        start = today.replace(year=today.year - 3)
+        start_str = start.strftime('%Y-%m-%d')
+        end_str = today.strftime('%Y-%m-%d')
 
         for code in stocks:
             try:
-                # 加载足够长的历史用于指标计算
-                start = today.replace(year=today.year - 3)
-                df = self.data_loader.load_stock(
-                    code,
-                    start.strftime('%Y-%m-%d'),
-                    today.strftime('%Y-%m-%d'),
-                    min_days=60,
+                df = fetch_stock_from_baostock(
+                    code, start_str, end_str,
                 )
-                if df is not None and len(df) > 0:
+                if df is not None and len(df) > 60:
                     result[code] = {
                         'df': df,
                         'latest': df.iloc[-1],
                     }
+                else:
+                    logger.warning(
+                        f'{code}: baostock 数据不足 ({len(df) if df is not None else 0} 行)'
+                    )
             except Exception as e:
-                logger.warning(f'加载 {code} 数据失败: {e}')
+                logger.warning(f'{code}: baostock 数据获取失败: {e}')
 
         return result
 

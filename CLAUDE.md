@@ -100,15 +100,57 @@ python run_scanner.py --phase 3    # 仅验证
 
 ## Cron 配置
 
-```bash
-# 每日模拟盘（交易日 21:00，周一至周五）
-0 21 * * 1-5 cd /path/to/015_indicator_scanner && \
-  /home/zhulei/anaconda3/envs/zhulei/bin/python run_scanner.py >> logs/daily_$(date +\%Y\%m\%d).log 2>&1
+### 配置方法
 
-# 每季度扫描（3/6/9/12月1日凌晨2:00）
-0 2 1 3,6,9,12 * cd /path/to/015_indicator_scanner && \
-  /home/zhulei/anaconda3/envs/zhulei/bin/python run_scanner.py --force >> logs/quarterly_$(date +\%Y\%m\%d).log 2>&1
+```bash
+# 1. 编辑 crontab
+crontab -e
+
+# 2. 添加以下两行（注意替换路径）
 ```
+
+### 定时规则
+
+```bash
+# ===== 每日模拟盘 =====
+# 每个交易日（周一至周五）21:00 执行
+# 脚本内部会调用 baostock API 判断是否为交易日，非交易日自动退出
+0 21 * * 1-5 cd /public/home/hpc/zhulei/superman/quant/code/015_indicator_scanner && /home/zhulei/anaconda3/envs/zhulei/bin/python run_scanner.py >> logs/daily_$(date +\%Y\%m\%d).log 2>&1
+
+# ===== 每季度重扫描 =====
+# 每年 3/6/9/12 月 1 日凌晨 2:00 执行全量扫描
+# 避开交易时段，利用服务器闲时完成（预计 15-30 分钟）
+0 2 1 3,6,9,12 * cd /public/home/hpc/zhulei/superman/quant/code/015_indicator_scanner && /home/zhulei/anaconda3/envs/zhulei/bin/python run_scanner.py --force >> logs/quarterly_$(date +\%Y\%m\%d).log 2>&1
+```
+
+### 验证 cron 是否生效
+
+```bash
+# 查看当前用户的 crontab
+crontab -l
+
+# 查看 cron 日志（确认定时触发）
+grep -i cron /var/log/syslog | tail -20
+
+# 检查项目日志
+ls -la logs/
+tail -20 logs/daily_*.log
+```
+
+### 手动触发（测试用）
+
+```bash
+# 模拟 cron 执行每日模拟盘
+cd /public/home/hpc/zhulei/superman/quant/code/015_indicator_scanner && \
+  /home/zhulei/anaconda3/envs/zhulei/bin/python run_scanner.py --phase 4
+
+# 模拟 cron 执行季度扫描
+cd /public/home/hpc/zhulei/superman/quant/code/015_indicator_scanner && \
+  /home/zhulei/anaconda3/envs/zhulei/bin/python run_scanner.py --force
+```
+
+> **注意**：首次运行前需要先手动执行一次 `python run_scanner.py --force` 完成全量扫描，
+> 让 state.json 进入 `running` 状态，之后 cron 才能正常执行每日模拟盘。
 
 ## 命令行参数
 
@@ -142,10 +184,16 @@ python run_scanner.py --phase 3    # 仅验证
 
 ## 数据来源
 
-- **股票日线**：`../data/input/{code}.csv`（5207只A股，交易日晚间更新）
-- **沪深300成分股**：通过 baostock API 获取（7天缓存）
-- **指数日线**：`../data/input/index_k_data/hushen300.csv`
-- **交易日判断**：参考股票 CSV 最后一行日期是否等于今天
+| 阶段 | 数据源 | 说明 |
+|------|--------|------|
+| Phase 1-3 | 本地 CSV | `../data/input/{code}.csv`（5207只A股） |
+| Phase 4 | **baostock API** | 直接调用 `query_history_k_data_plus`，确保获取最新交易日数据 |
+| 沪深300成分股 | baostock API | `query_hs300_stocks()`（7天缓存） |
+| 指数日线 | 本地 CSV | `../data/input/index_k_data/hushen300.csv` |
+| 交易日判断 | **baostock API** | `query_trade_dates()`，不依赖本地文件 |
+
+> **设计理由**：Phase 4 用 baostock 直接拉取，避免本地 CSV 因网络/服务器故障
+> 未更新导致的模拟盘数据缺失。Phase 1-3 仍用本地 CSV（扫描 300 只股票，API 太慢）。
 
 ## 关键技术细节
 
@@ -154,7 +202,8 @@ python run_scanner.py --phase 3    # 仅验证
 - **轻量回测**：Phase 1 不写文件、不画图、不打印日志，最大化吞吐
 - **扁平并行**：所有 (indicator, stock) 对一次性提交到线程池（32线程）
 - **数据预加载**：300 只股票的 DataFrame 一次读入内存（~18 MB）
-- **非交易日静默**：Cron 每日触发，内部判断交易日，非交易日直接退出
+- **非交易日静默**：Cron 每日触发，baostock API 判断交易日，非交易日直接退出
+- **baostock 数据格式**：API 返回字段与本地 CSV 自动对齐（缺失字段填 NaN）
 
 ## 与 002_self_backtest_reborn 的关系
 

@@ -57,15 +57,28 @@ score = mean_excess_return × win_rate - 0.5 × std_excess_return
 
 ## ⏰ Cron 定时任务
 
-```bash
-# 每日模拟盘（交易日 21:00）
-0 21 * * 1-5 cd .../015_indicator_scanner && python run_scanner.py >> logs/daily_$(date +\%Y\%m\%d).log 2>&1
+### 配置方法
 
-# 每季度扫描（3/6/9/12月1日凌晨2:00）
-0 2 1 3,6,9,12 * cd .../015_indicator_scanner && python run_scanner.py --force >> logs/quarterly_$(date +\%Y\%m\%d).log 2>&1
+```bash
+# 编辑 crontab
+crontab -e
+
+# 添加以下两行：
+# 每日模拟盘（交易日 21:00，非交易日自动跳过）
+0 21 * * 1-5 cd /public/home/hpc/zhulei/superman/quant/code/015_indicator_scanner && /home/zhulei/anaconda3/envs/zhulei/bin/python run_scanner.py >> logs/daily_$(date +\%Y\%m\%d).log 2>&1
+
+# 每季度重扫描（3/6/9/12月1日凌晨2:00）
+0 2 1 3,6,9,12 * cd /public/home/hpc/zhulei/superman/quant/code/015_indicator_scanner && /home/zhulei/anaconda3/envs/zhulei/bin/python run_scanner.py --force >> logs/quarterly_$(date +\%Y\%m\%d).log 2>&1
 ```
 
-## 📊 输出结构
+> **重要**：首次运行前，先手动执行 `python run_scanner.py --force` 完成全量扫描。
+
+## 📊 数据来源
+
+| 阶段 | 数据源 |
+|------|--------|
+| Phase 1-3（扫描/选股/验证） | 本地 CSV 文件 |
+| Phase 4（每日模拟盘） | **baostock API 实时拉取** |
 
 ```
 output/

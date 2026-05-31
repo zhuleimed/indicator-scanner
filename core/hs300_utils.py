@@ -7,7 +7,7 @@
   3. 加载指数日线数据
 """
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import List, Optional
 
 import pandas as pd
@@ -100,26 +100,159 @@ def is_trading_day() -> bool:
     """
     判断今天是否为交易日。
 
-    策略：读取参考股票 CSV 最后一行的日期，如果等于今天的日期，
-    说明今天数据已更新，即为交易日。
+    通过 baostock API 的 query_trade_dates 查询，
+    不依赖本地 CSV 文件，确保数据源可靠性。
 
     Returns
     -------
     bool
     """
-    today = date.today()
-    ref_file = f'{REFERENCE_STOCK}.csv'
-    ref_path = f'{DATA_DIR}/{ref_file}'
+    import baostock as bs
+
+    today_str = date.today().strftime('%Y-%m-%d')
 
     try:
-        df = pd.read_csv(ref_path)
-        last_date_str = str(df['date'].iloc[-1])
-        last_date = datetime.strptime(last_date_str[:10], '%Y-%m-%d').date()
-        return last_date == today
-    except (FileNotFoundError, KeyError, ValueError, IndexError) as e:
-        print(f'[交易日判断] 无法读取参考文件 {ref_path}: {e}')
-        # 退而求其次：周末肯定不是交易日
-        return today.weekday() < 5
+        lg = bs.login()
+        if lg.error_code != '0':
+            print(f'[交易日判断] baostock 登录失败，回退到工作日判断')
+            return date.today().weekday() < 5
+
+        rs = bs.query_trade_dates(start_date=today_str, end_date=today_str)
+        is_trade = False
+        if rs.error_code == '0':
+            while rs.next():
+                row = rs.get_row_data()
+                # row: [calendar_date, is_trading_day]
+                # is_trading_day: '1' = 交易日, '0' = 非交易日
+                if len(row) >= 2 and row[0] == today_str and row[1] == '1':
+                    is_trade = True
+
+        bs.logout()
+        return is_trade
+
+    except Exception as e:
+        print(f'[交易日判断] baostock 查询异常: {e}，回退到工作日判断')
+        return date.today().weekday() < 5
+
+
+def fetch_stock_from_baostock(
+    stock_code: str,
+    start_date: str,
+    end_date: str,
+) -> Optional[pd.DataFrame]:
+    """
+    从 baostock API 获取单只股票的日线数据。
+
+    用于 Phase 4 模拟盘，确保获取最新交易日数据，
+    避免依赖本地 CSV 文件可能的数据缺失问题。
+
+    Parameters
+    ----------
+    stock_code : str
+        6位数字股票代码
+    start_date : str
+        开始日期 'YYYY-MM-DD'
+    end_date : str
+        结束日期 'YYYY-MM-DD'
+
+    Returns
+    -------
+    pd.DataFrame or None
+        列与本地 CSV 格式一致：
+        date, open, high, low, close, volume, amount,
+        turn, peTTM, pbMRQ, psTTM, pcfNcfTTM,
+        tradestatus, isST, pctChg
+    """
+    import baostock as bs
+
+    # 判断交易所前缀
+    if stock_code.startswith('6'):
+        bs_code = f'sh.{stock_code}'
+    else:
+        bs_code = f'sz.{stock_code}'
+
+    lg = bs.login()
+    if lg.error_code != '0':
+        print(f'[baostock] 登录失败: {lg.error_msg}')
+        return None
+
+    # 请求日线数据（前复权）
+    fields = ('date,code,open,high,low,close,preclose,'
+              'volume,amount,adjustflag,turn,tradestatus,pctChg,isST')
+    rs = bs.query_history_k_data_plus(
+        bs_code,
+        fields,
+        start_date=start_date,
+        end_date=end_date,
+        frequency='d',
+        adjustflag='3',  # 前复权
+    )
+
+    if rs.error_code != '0':
+        print(f'[baostock] 获取 {bs_code} 数据失败: {rs.error_msg}')
+        bs.logout()
+        return None
+
+    data_list = []
+    while rs.next():
+        data_list.append(rs.get_row_data())
+
+    bs.logout()
+
+    if not data_list:
+        return None
+
+    df = pd.DataFrame(data_list, columns=rs.fields)
+
+    # ---- 清理与转换 ----
+
+    # 去掉不需要的列
+    for col in ['code', 'adjustflag']:
+        if col in df.columns:
+            df = df.drop(columns=[col])
+
+    # 数值类型转换
+    numeric_cols = ['open', 'high', 'low', 'close', 'preclose',
+                    'volume', 'amount', 'turn', 'pctChg']
+    for col in numeric_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+
+    # 整数类型
+    if 'isST' in df.columns:
+        df['isST'] = pd.to_numeric(df['isST'], errors='coerce').fillna(0).astype(int)
+    else:
+        df['isST'] = 0
+
+    if 'tradestatus' in df.columns:
+        df['tradestatus'] = pd.to_numeric(df['tradestatus'], errors='coerce').fillna(1).astype(int)
+    else:
+        df['tradestatus'] = 1
+
+    # 日期转换
+    df['date'] = pd.to_datetime(df['date'], errors='coerce')
+
+    # 过滤非交易日（tradestatus == 0）
+    if 'tradestatus' in df.columns:
+        df = df[df['tradestatus'] == 1]
+
+    # 过滤 ST 股
+    if (df['isST'] == 1).any():
+        return None
+
+    # 补全本地 CSV 中可能存在但 baostock 不提供的列
+    for col in ['peTTM', 'pbMRQ', 'psTTM', 'pcfNcfTTM']:
+        if col not in df.columns:
+            df[col] = float('nan')
+
+    # 确保关键列无缺失
+    required = ['date', 'open', 'high', 'low', 'close', 'volume', 'amount']
+    df = df.dropna(subset=required)
+
+    if len(df) == 0:
+        return None
+
+    return df.reset_index(drop=True)
 
 
 def load_index_data(
