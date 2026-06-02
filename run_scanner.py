@@ -157,7 +157,108 @@ def run_daily_simulation(
         push_error(str(e), 'Phase 4')
 
 
+LOCK_FILE = os.path.join(OUTPUT_DIR, '.run_scanner.lock')
+
+
+def _check_stale_process():
+    """
+    检查是否有之前的 run_scanner 进程仍在运行。
+
+    用两个方法双重保险：
+      1. /proc/PID/cmdline 精确校验进程身份（比 pgrep -f 安全，不会误杀）
+      2. PID 锁文件兼容（进程名一致时才清理）
+    """
+    my_pid = os.getpid()
+
+    def _is_same_script(pid: int) -> bool:
+        """
+        通过 /proc/PID/cmdline 确认该进程是否真的是 run_scanner.py。
+
+        两条规则：
+          1. 可执行文件（parts[0]）必须是 Python 解释器（含"python"）
+          2. 参数列表中有 run_scanner.py
+        """
+        try:
+            cmdline_path = f'/proc/{pid}/cmdline'
+            if not os.path.exists(cmdline_path):
+                return False
+            with open(cmdline_path, 'rb') as f:
+                raw = f.read()
+            # cmdline 用 \0 分隔参数
+            parts = raw.decode('utf-8', errors='replace').split('\0')
+            if len(parts) < 2:
+                return False
+            # 可执行文件必须是 python
+            if 'python' not in parts[0].lower():
+                return False
+            # 参数中必须有 run_scanner.py
+            return any('run_scanner.py' in p for p in parts[1:])
+        except (OSError, IOError):
+            return False
+
+    # 方法1: 扫描 /proc 下的所有进程
+    try:
+        for entry in os.listdir('/proc'):
+            if not entry.isdigit():
+                continue
+            pid = int(entry)
+            if pid == my_pid:
+                continue
+            if _is_same_script(pid):
+                print(f'[启动] 发现残留进程 PID={pid}（{entry}），正在清理…')
+                try:
+                    os.kill(pid, 15)  # SIGTERM
+                    import time
+                    time.sleep(0.5)
+                    os.kill(pid, 0)   # 检查是否还活着
+                    os.kill(pid, 9)   # SIGKILL
+                except OSError:
+                    pass
+    except PermissionError:
+        pass
+
+    # 方法2: PID 锁文件（兼容旧版）
+    if os.path.exists(LOCK_FILE):
+        try:
+            with open(LOCK_FILE) as f:
+                old_pid_str = f.read().strip()
+            if old_pid_str and old_pid_str.isdigit():
+                old_pid = int(old_pid_str)
+                if old_pid != my_pid and _is_same_script(old_pid):
+                    print(f'[启动] 发现锁文件残留 PID={old_pid}，强制清理')
+                    try:
+                        os.kill(old_pid, 15)
+                        import time
+                        time.sleep(0.5)
+                        os.kill(old_pid, 0)
+                        os.kill(old_pid, 9)
+                    except OSError:
+                        pass
+        except (ValueError, OSError):
+            pass
+
+    # 写入当前 PID
+    os.makedirs(os.path.dirname(LOCK_FILE), exist_ok=True)
+    with open(LOCK_FILE, 'w') as f:
+        f.write(str(my_pid))
+
+
+def _cleanup_lock():
+    """退出时清理锁文件（仅当是自己的 PID 时）。"""
+    try:
+        if os.path.exists(LOCK_FILE):
+            with open(LOCK_FILE) as f:
+                content = f.read().strip()
+            if content == str(os.getpid()):
+                os.remove(LOCK_FILE)
+    except Exception:
+        pass
+
+
 def main():
+    # 防重复运行检测（kill 残留进程后继续）
+    _check_stale_process()
+
     parser = argparse.ArgumentParser(
         description='015_indicator_scanner — 指标扫描与模拟盘系统',
     )
@@ -250,7 +351,12 @@ def main():
         run_daily_simulation(state, simulator, dry_run=args.dry_run)
 
     logger.info('执行完毕')
+    _cleanup_lock()
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except BaseException:
+        _cleanup_lock()
+        raise

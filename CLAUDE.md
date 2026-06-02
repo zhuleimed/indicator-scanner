@@ -42,11 +42,11 @@ score = mean_excess_return × win_rate - 0.5 × std_excess_return
 │   ├── metrics.py              # MetricsCalculator
 │   ├── reporter.py             # Reporter
 │   ├── log_utils.py            # 日志工具
-│   ├── scanner.py              # [新建] Phase 1-3 扫描编排器
-│   ├── simulator.py            # [新建] Phase 4 每日模拟盘
-│   ├── state_manager.py        # [新建] JSON 状态持久化
-│   ├── notification.py         # [新建] WxPusher 推送
-│   └── hs300_utils.py          # [新建] 沪深300成分股/交易日判断
+│   ├── scanner.py              # Phase 1-3 扫描编排器
+│   ├── simulator.py            # Phase 4 每日模拟盘
+│   ├── state_manager.py        # JSON 状态持久化
+│   ├── notification.py         # WxPusher 推送
+│   └── hs300_utils.py          # 沪深300成分股/交易日判断 + baostock API 超时保护
 ├── signals/                    # 信号模块（从 002_self_backtest_reborn 复制+裁剪）
 │   ├── gf.py                   # GFSignal（97个指标信号方法）
 │   └── gf_factors.py           # 143+ 指标计算函数（numpy）
@@ -203,6 +203,8 @@ cd /public/home/hpc/zhulei/superman/quant/code/015_indicator_scanner && \
 - **扁平并行**：所有 (indicator, stock) 对一次性提交到线程池（32线程）
 - **数据预加载**：300 只股票的 DataFrame 一次读入内存（~18 MB）
 - **非交易日静默**：Cron 每日触发，baostock API 判断交易日，非交易日直接退出
+- **baostock 超时保护**：Phase 4 的 `fetch_stock_from_baostock()` 用 `signal.alarm` 设置 45 秒超时，防止 baostock API 无限挂起导致脚本永久卡死
+- **防重复运行**：`run_scanner.py` 启动时自动扫描 `/proc`，通过 cmdline 精确匹配残留的 `run_scanner.py` 进程并清理；退出时自动删除 PID 锁文件
 - **baostock 数据格式**：API 返回字段与本地 CSV 自动对齐（缺失字段填 NaN）
 
 ## 与 002_self_backtest_reborn 的关系

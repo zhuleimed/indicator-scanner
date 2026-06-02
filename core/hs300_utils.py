@@ -139,6 +139,7 @@ def fetch_stock_from_baostock(
     stock_code: str,
     start_date: str,
     end_date: str,
+    timeout_seconds: int = 45,
 ) -> Optional[pd.DataFrame]:
     """
     从 baostock API 获取单只股票的日线数据。
@@ -154,6 +155,8 @@ def fetch_stock_from_baostock(
         开始日期 'YYYY-MM-DD'
     end_date : str
         结束日期 'YYYY-MM-DD'
+    timeout_seconds : int
+        单次 API 调用超时秒数（默认 45s），防止网络挂起导致脚本永久卡死
 
     Returns
     -------
@@ -164,6 +167,7 @@ def fetch_stock_from_baostock(
         tradestatus, isST, pctChg
     """
     import baostock as bs
+    import signal
 
     # 判断交易所前缀
     if stock_code.startswith('6'):
@@ -171,33 +175,53 @@ def fetch_stock_from_baostock(
     else:
         bs_code = f'sz.{stock_code}'
 
-    lg = bs.login()
-    if lg.error_code != '0':
-        print(f'[baostock] 登录失败: {lg.error_msg}')
-        return None
+    # ---------- 设置超时闹钟 ----------
+    # 用 signal.alarm 防止 baostock API 无限挂起（如 6/1 事故）
+    class _Timeout(Exception):
+        pass
 
-    # 请求日线数据（前复权）
-    fields = ('date,code,open,high,low,close,preclose,'
-              'volume,amount,adjustflag,turn,tradestatus,pctChg,isST')
-    rs = bs.query_history_k_data_plus(
-        bs_code,
-        fields,
-        start_date=start_date,
-        end_date=end_date,
-        frequency='d',
-        adjustflag='3',  # 前复权
-    )
+    def _alarm_handler(signum, frame):
+        raise _Timeout(f'baostock API 超时 ({timeout_seconds}s)')
 
-    if rs.error_code != '0':
-        print(f'[baostock] 获取 {bs_code} 数据失败: {rs.error_msg}')
+    old_handler = signal.signal(signal.SIGALRM, _alarm_handler)
+    signal.alarm(timeout_seconds)
+
+    try:
+        lg = bs.login()
+        if lg.error_code != '0':
+            print(f'[baostock] 登录失败: {lg.error_msg}')
+            return None
+
+        # 请求日线数据（前复权）
+        fields = ('date,code,open,high,low,close,preclose,'
+                  'volume,amount,adjustflag,turn,tradestatus,pctChg,isST')
+        rs = bs.query_history_k_data_plus(
+            bs_code,
+            fields,
+            start_date=start_date,
+            end_date=end_date,
+            frequency='d',
+            adjustflag='3',  # 前复权
+        )
+
+        if rs.error_code != '0':
+            print(f'[baostock] 获取 {bs_code} 数据失败: {rs.error_msg}')
+            bs.logout()
+            return None
+
+        data_list = []
+        while rs.next():
+            data_list.append(rs.get_row_data())
+
         bs.logout()
+
+    except _Timeout:
+        print(f'[baostock] 获取 {bs_code} 数据超时 ({timeout_seconds}s)，跳过该股票')
+        # 超时后不尝试 bs.logout()——它也可能卡住；让下一次 login() 重置连接
         return None
-
-    data_list = []
-    while rs.next():
-        data_list.append(rs.get_row_data())
-
-    bs.logout()
+    finally:
+        signal.alarm(0)               # 取消闹钟
+        signal.signal(signal.SIGALRM, old_handler)  # 恢复原 handler
 
     if not data_list:
         return None
